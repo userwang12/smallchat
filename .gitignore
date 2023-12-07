@@ -1,4 +1,4 @@
 # Editor directories and files
 .vscode
 #可执行文件
-chatServer
+server
