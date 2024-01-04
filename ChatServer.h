@@ -37,6 +37,7 @@ class ClientManager final
 {//单例模式
     public:
         ClientManager(const ClientManager &rhs) = delete;
+        ClientManager& operator=(const ClientManager&) = delete;
         ~ClientManager();
         static ClientManager& getInstance();
         void freeClient(int rmfd);
@@ -59,6 +60,7 @@ class ChatServer final
 {//单例模式
     public: 
         ChatServer(const ChatServer &rhs) = delete;
+        ChatServer& operator=(const ChatServer& ) = delete;
         ~ChatServer();
         static ChatServer& getInstance();//这里需要声明为静态，否则在类外无法实例化对象
         bool initServer();//初始化部分,返回监听文件描述符
