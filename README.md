@@ -10,3 +10,5 @@
 
 运行命令：./smallchat-client 服务端ip地址(本机则是127.0.0.1) 端口号(7711)
 
+项目时序图：
+![image](https://github.com/userwang12/smallchat/assets/150827991/52ad138c-06db-4dd3-be1a-176e921c1c4f)
