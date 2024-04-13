@@ -435,10 +435,11 @@ void ChatServer::start()
         std::cout << "create listenfd false" << std::endl;
         return ;
     }
+    std::vector<std::shared_ptr<Client>> activeClients;
 
     while(!m_isStop)
     {
-        std::vector<std::shared_ptr<Client>> activeClients;
+        activeClients.clear();
         m_poller->poll(activeClients, m_acceptor);
 
         if(m_acceptor->isReady()) //listenfd就绪
