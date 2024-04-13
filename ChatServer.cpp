@@ -9,6 +9,7 @@ int setNonblockNondelay(int fd)
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, (char *)&flag, sizeof(flag));
 }
 
+//////////////////////Client类
 Client::Client(int sockfd) 
 {
     m_fd = sockfd;
@@ -16,144 +17,85 @@ Client::Client(int sockfd)
     memset(m_writeBuf, 0, sizeof(m_writeBuf));
 }
 
-bool Client::read()
+Client::~Client()
 {
-    //这个read可能是设置命令(改名字)也可能是发送消息
-    char msg[1024]={0};
-    memset(msg, 0, sizeof(msg));
-    int nread = recv(m_fd, msg, sizeof(msg), 0);
-    if(nread <= 0)
-    {
-        printf("client %d close connect...\n", m_fd);
-        return false;
-    }
-    else if(nread)
-    {
-        //在这里进行判断是进行改名字还是发消息
-        if (msg[0] == '/')
-        {
-            //去除命令中的换行符
-            char *target;
-            target = strchr(msg,'\r'); if(target) *target = '\0';
-            target = strchr(msg,'\n'); if(target) *target = '\0';
-
-            char* args = strchr(msg,' ');
-            if(args) 
-                *args++ = '\0';
-
-            if(!strcasecmp(msg, "/nick") && args)
-            {//改名
-                m_nick = args;
-            }
-            else 
-            {
-                std::string errstr = "unsupported cmd\n";
-                send(m_fd, errstr.c_str(), errstr.size(), 0);
-            }
-            return true;
-        } 
-        //发送消息
-        memset(m_writeBuf, 0, sizeof(m_writeBuf));
-        int len = m_nick.size();
-        memcpy(m_writeBuf, m_nick.c_str(), len);
-        m_writeBuf[len++] = '>';
-        memcpy(m_writeBuf + len, msg, sizeof(m_writeBuf)-len);
-        if(nread > sizeof(m_writeBuf))
-        {
-            nread = sizeof(m_writeBuf)-1;
-            m_writeBuf[nread] = '\0';
-        }
-        //把聊天用户发的消息打印在聊天服务端控制台 
-        std::cout << m_writeBuf << std::endl;
-
-        return true;
-    }
+    close(m_fd);
 }
 
-bool Client::write(const Client& c)
+template<typename Func>
+void Client::setReadCallback(Func func) 
+{                          
+    m_readCallback = [=]() { //传入进来的外部变量必须是传拷贝，传入的函数对象是临时的
+        func(this);
+    };
+}
+
+void Client::handleEvent()
+{
+    //这里只用处理接收到来自客户端的数据一种情况(也就是读事件)
+    if(m_readCallback) 
+        m_readCallback();
+}
+
+int Client::fd()
+{
+    return m_fd;
+}
+
+std::string Client::nick()
+{
+    return m_nick;
+}
+
+std::string Client::Buffer()
+{
+    return m_writeBuf;
+}
+
+void Client::changeNick(const char* nick)
+{
+    m_nick = nick;
+}
+
+void Client::changeBuffer(const char* buffer)
+{
+    memset(m_writeBuf, 0, sizeof(m_writeBuf));
+    memcpy(m_writeBuf, buffer, sizeof(m_writeBuf));
+}
+
+//////////////这里是Acceptor类
+Acceptor::Acceptor(ChatServer* server) 
+    : m_server(server),
+      m_listenfd(-2),
+      m_clientNum(0),
+      m_isReadyAcc(false)
+{
+}
+
+Acceptor::~Acceptor()
 {   
-    int temp = send(m_fd, c.m_writeBuf, sizeof(c.m_writeBuf), 0);
-    if(temp <= 0)
-    {
-        printf("send to %d failure\n", m_fd);
-        return false;
-    }
-    return true;            
+    close(m_listenfd);
 }
 
-ClientManager::ClientManager()
+int Acceptor::fd()
 {
-    m_clientNumber = 0;
-    m_maxClientFd = -1;
-    for(int i = 0 ; i < MAX_CLIENT; i++)
-    {
-        user[i] = nullptr;
-    }
+    if(m_listenfd == -2) 
+        std::cout << "listenfd not initialized" << std::endl;
+    
+    return m_listenfd;
 }
 
-ClientManager::~ClientManager()
+bool Acceptor::isReady()
 {
-    for(int i = 0; i < m_maxClientFd; i++)
-    {
-        if(user[i] != nullptr)
-        {
-            delete user[i];
-            close(i);
-        }
-    }
+    return m_isReadyAcc;
 }
 
-ClientManager& ClientManager::getInstance()
+bool Acceptor::listenClient()  //返回false代表创建listenfd失败
 {
-    static ClientManager manage;
-    return manage;
-}
-
-void ClientManager::freeClient(int rmfd)
-{//这个函数必须需要，因为需要把writefds置空，还需要更新最大值
-    if(rmfd == m_maxClientFd)
-    {
-        for(int i = m_maxClientFd-1; i >= 0; i--)
-        {
-            if(user[i] != nullptr)
-            {
-                m_maxClientFd = i;
-                break;
-            }
-        }
-    }
-    if(user[rmfd] != nullptr)
-    {
-        delete user[rmfd];
-        user[rmfd] = nullptr;
-        m_clientNumber--;
-    }
-
-    close(rmfd);
-}
-
-ChatServer::~ChatServer()
-{
-    //chatServer对象维护listenfd生命周期
-    if(m_listenfd != -1)
-    {
-        close(m_listenfd);
-    }
-}
-
-ChatServer& ChatServer::getInstance()
-{
-    static ChatServer server;
-    return server;
-}
-
-//创建监听套接字
-bool ChatServer::initServer()
-{
-    m_listenfd=socket(AF_INET, SOCK_STREAM, 0);
+    m_listenfd = socket(AF_INET, SOCK_STREAM, 0);
     if(m_listenfd == -1)
     {
-        printf("socket failure\n");
+        std::cout << "socket failure" << std::endl;
         return false;
     }
 
@@ -164,152 +106,367 @@ bool ChatServer::initServer()
     saddr.sin_addr.s_addr = htonl(INADDR_ANY);
     saddr.sin_port = htons(BIND_PORT);
     saddr.sin_family = AF_INET;
-    int ret = bind(m_listenfd, (struct sockaddr *)&saddr, sizeof(saddr));
+    int ret = bind(m_listenfd, (struct sockaddr*)&saddr, sizeof(saddr));
     if(ret == -1)
     {
-        printf("bind failure\n");
+        std::cout << "bind failure" << std::endl;
         return false;
     }
 
-    ret=listen(m_listenfd, 5);
+    ret = listen(m_listenfd, 5);
     if(ret == -1)
     {
-        printf("listen failure\n");
+        std::cout << "listen failure" << std::endl;
         return false;
     }
+
+    m_server->initMaxFd(m_listenfd);
 
     return true;
 }
 
-int ChatServer::initSelect()
+void Acceptor::setReady(bool ready)
 {
-    FD_ZERO(&m_readfds);
-    //监听文件描述符和有客户端连接进来对应的文件描述符都要监听读事件
-    FD_SET(m_listenfd, &m_readfds);
-
-    int maxfd = ClientManager::getInstance().m_maxClientFd;
-    if(maxfd < m_listenfd) maxfd = m_listenfd;
-    
-    for(int i = 0; i <= maxfd; i++)
-    {
-        if(ClientManager::getInstance().user[i] == nullptr) continue;
-        FD_SET(i, &m_readfds);
-    }
-
-    timeval tv;
-    tv.tv_sec = 1;
-    tv.tv_usec = 0;
-    //开始监听,不仅要注册读事件还需要注册写事件
-    int num = select(maxfd+1, &m_readfds, nullptr, nullptr, nullptr);
-    return num;
+    m_isReadyAcc = ready;
 }
 
-bool ChatServer::acceptClient()
+bool Acceptor::acceptClient()
 {
     sockaddr_in cliaddr;
     socklen_t cli_len = sizeof(cliaddr);
     memset(&cliaddr, 0, cli_len);
+
+    int sockfd;
     while(1)
     {
-        int sockfd = accept(m_listenfd, (struct sockaddr *)&cliaddr, &cli_len);
+        sockfd = accept(m_listenfd, (struct sockaddr*)&cliaddr, &cli_len);
         if(sockfd < 0)
         {
-            if(errno == EINTR) 
-                continue;//如果程序被中断则继续执行accept
+            if(errno == EINTR)  //如果accept是被信号意外中断则重新accept
+                continue;
             std::cout << "accept failure!" << std::endl;
             return false;
         }
-        
-        if(ClientManager::getInstance().m_clientNumber >= MAX_CLIENT)
+
+        break;
+    }
+
+    if(m_clientNum == MAX_CLIENT)
+    {
+        std::cout << "Client Number limit!" << std::endl;
+        close(sockfd);
+        return false;
+    }
+
+    setNonblockNondelay(sockfd);
+    
+    addClient(sockfd);
+    m_clientNum++;
+
+    welcomeClientJoin(sockfd);
+
+    setReady(false); 
+    
+    return true;
+}
+
+void Acceptor::addClient(int fd) 
+{
+    m_server->addClient(fd);
+}
+
+void Acceptor::welcomeClientJoin(int sockfd)
+{
+    std::cout << "welcome sockfd: " << sockfd << " join chatRoom" << std::endl;
+
+    std::string msg("welcome to chatroom, /nick is change yourname\n");
+    send(sockfd, msg.c_str(), msg.size(), 0);
+}
+
+void Acceptor::reduceClientNum()
+{
+    m_clientNum--;
+} 
+
+//////////////这里是Poller类
+Poller::Poller() : m_maxClientFd(-1){}
+
+void Poller::poll(std::vector<std::shared_ptr<Client>>& activeClients, std::shared_ptr<Acceptor> acceptor) //不使用引用是防止被误删资源
+{
+    FD_ZERO(&m_readfds);
+    
+    FD_SET(acceptor->fd(), &m_readfds);
+    for(int i = 0; i <= m_maxClientFd; i++) //listenfd不由m_users管
+    {
+        if(m_users[i] && i != acceptor->fd()) //如果这个客户端对象存在就需要监听他的事件
+            FD_SET(i, &m_readfds);
+    }
+
+    //开始监听
+    int num = select(m_maxClientFd + 1, &m_readfds, nullptr, nullptr, nullptr);
+    if(num > 0)
+    {
+        if(FD_ISSET(acceptor->fd(), &m_readfds))
         {
-            std::cout << "Client Number limit!" << std::endl;
-            close(sockfd);
-            return false;
-        }
+            num--;
+            acceptor->setReady(true);
+        }   
 
-        setNonblockNondelay(sockfd);
-
-        Client *c = new Client(sockfd);
-        ClientManager::getInstance().user[sockfd] = c;
-        if(sockfd > ClientManager::getInstance().m_maxClientFd) 
-            ClientManager::getInstance().m_maxClientFd = sockfd;
-        ClientManager::getInstance().m_clientNumber++;
-
-        std::cout << "sockfd " << sockfd << " join chatRoom" << std::endl;
-
-        std::string msg("welcome to chatroom,/nick is change yourname\n");
-        send(sockfd, msg.c_str(), msg.size(), 0);
-        return true;
+        fillActiveClients(activeClients, num);
+    }
+    else 
+    {
+        std::cout << "select error" << std::endl;
+        return ;
     }
 }
 
-void ChatServer::forwardMessage()
+//填充事件准备就绪的client对象
+void Poller::fillActiveClients(std::vector<std::shared_ptr<Client>>& activeClients, int num) 
 {
-    for(int j = 0; j <= ClientManager::getInstance().m_maxClientFd; j++)
+    //填充activeClients
+    for(int i = 0; i <= m_maxClientFd && num > 0; i++)
     {
-        if(ClientManager::getInstance().user[j] == nullptr) 
-            continue;
-
-        Client& c = *ClientManager::getInstance().user[j];
-        //读事件，客户自己发送的数据自己也收不到，所以是先判断读写没区别
-        if(FD_ISSET(j, &m_readfds))
+        if(m_users[i] && FD_ISSET(i, &m_readfds))
         {
-            //根据读返回值判断是否要清除客户信息
-            if(!c.read())
-            {
-                ClientManager::getInstance().freeClient(j);//写文件描述符集和读文件描述符集有点不一样
-                continue;
-            }
-
-            //即时发送
-            for(int i = 0; i <= ClientManager::getInstance().m_maxClientFd; i++)
-            {
-                if(ClientManager::getInstance().user[i] == nullptr || i == j) 
-                    continue;
-                bool isWrite = ClientManager::getInstance().user[i]->write(c);
-                if(!isWrite)
-                    ClientManager::getInstance().freeClient(i);
-            }//end-inner-for-loop
+            num--;
+            activeClients.push_back(m_users[i]);
         }
-    }//end-outer-for-loop
+    }
 }
 
-bool ChatServer::chatRoom()
+void Poller::initMaxFd(int listenfd)
 {
-    while(1)
+    m_maxClientFd = listenfd;
+}
+
+void Poller::addClient(std::shared_ptr<Client>& ptr, int maxClientFd) 
+{
+    //添加监听客户端
+    m_users[ptr->fd()] = ptr;
+    m_maxClientFd = maxClientFd;
+}
+
+void Poller::rmClient(int fd, int maxClientFd)
+{
+    m_users[fd].reset();
+    m_maxClientFd = maxClientFd;
+}
+
+////////////从这里开始ChatServer类
+ChatServer::ChatServer() 
+{   
+    m_maxClientFd = -2;
+    m_acceptor = std::make_shared<Acceptor>(this);
+    m_poller = std::make_unique<Poller>();
+}
+
+ChatServer& ChatServer::getInstance()
+{
+    static ChatServer server;
+    return server;
+}
+
+void ChatServer::initMaxFd(int listenfd)
+{
+    m_maxClientFd = listenfd;
+    m_poller->initMaxFd(listenfd);
+}
+
+void ChatServer::addClient(int fd)
+{
+    //添加客户端addClient
+    m_users[fd] = std::make_shared<Client>(fd);
+    m_users[fd]->setReadCallback(std::bind(&ChatServer::forwardMessage, this, std::placeholders::_1));
+    
+    if(fd > m_maxClientFd)
+        m_maxClientFd = fd;
+
+    m_poller->addClient(m_users[fd], m_maxClientFd);
+}
+
+void ChatServer::forwardMessage(Client* client) //由client对象调用,调用该函数的client的读事件就绪
+{
+    //1.read()消息 2.将消息转发(通过m_users,还有m_maxClientFd)
+    int Flag = readFromSocket(client);
+    if(Flag == 1) 
     {
-        int num = initSelect();
-        if(num < 0)
+        //转发消息
+        for(int i = 0; i <= m_maxClientFd; i++) 
         {
-            if(errno == EINTR) 
+            if(m_users[i] == nullptr || i == client->fd()) 
                 continue;
-            printf("select failure\n");
-            return false;
-        }
-        else if(num)
-        {
-            if(FD_ISSET(m_listenfd, &m_readfds))
+            if(!sendMsg(client, i)) //发送消息失败
             {
-                bool isAccept = acceptClient();
-                //根据业务需求处理false 或者是 true,这里是不管是true还是false都直接忽略并往下执行
+                //释放连接客户端资源
+                freeClient(i);
             }
-            
-            //客户文件描述符处理读事件
-            forwardMessage();
+        }
+    }    
+    else if(Flag == -1)
+    {
+        //读取消息失败，释放连接客户端资源
+        freeClient(client->fd());
+    }
+    
+}
+
+int ChatServer::readFromSocket(Client* client) //-1代表出错或断开连接  0代表设置指令(改名)或没读到数据  1代表读取到数据
+{
+    if(!client) //防止访问空指针
+    {
+        std::cout << "readFd Empty Client" << std::endl;
+        return -1; 
+    }
+
+    //这个read可能是设置命令(改名字)也可能是发送消息
+    char msg[1024]={0};
+    memset(msg, 0, sizeof(msg));
+    int nread = recv(client->fd(), msg, sizeof(msg), 0);
+    if(nread == -1)
+    {
+        if(errno == EAGAIN || errno == EINTR)
+            return 0;
+        return -1;
+    }
+    else if(nread == 0)
+    {
+        printf("client %d close connect...\n", client->fd());
+        return -1;
+    }
+    
+    //在这里进行判断是进行改名字还是发消息
+    if (msg[0] == '/')
+    {
+        processCmd(client, msg);
+        return 0;
+    } 
+
+    //发送消息
+    readMsg(client, msg, nread);
+
+    return 1;
+}
+
+void ChatServer::processCmd(Client* client, char* msg)
+{
+    //去除命令中的换行符
+    char *target;
+    target = strchr(msg,'\r'); if(target) *target = '\0';
+    target = strchr(msg,'\n'); if(target) *target = '\0';
+
+    char* args = strchr(msg,' ');
+    if(args) 
+        *args++ = '\0';
+
+    if(!strcasecmp(msg, "/nick") && args)
+    {//改名
+        client->changeNick(args);
+        std::string info = "change nick success!\n";
+        send(client->fd(), info.c_str(), info.size(), 0);
+    }
+    else 
+    {
+        std::string errstr = "unsupported cmd\n";
+        send(client->fd(), errstr.c_str(), errstr.size(), 0);
+    }
+}
+
+void ChatServer::readMsg(Client* client, char* msg, int nread)
+{
+    char writeBuf[1024];
+    memset(writeBuf, 0, sizeof(writeBuf));
+
+    int len = client->nick().size();
+    memcpy(writeBuf, client->nick().c_str(), len);
+    writeBuf[len++] = '>';
+    memcpy(writeBuf + len, msg, sizeof(writeBuf) - len);
+
+    if(nread > sizeof(writeBuf)) //当用户发送数据太长时截断，防止操作未分配内存
+    {
+        nread = sizeof(writeBuf) - 1;
+        writeBuf[nread] = '\0';
+    }
+
+    //把聊天用户发的消息打印在聊天服务端控制台 
+    std::cout << writeBuf << std::endl;
+
+    client->changeBuffer(writeBuf);
+}
+
+bool ChatServer::sendMsg(Client* client, int targetFd)
+{
+    int tmp = send(targetFd, client->Buffer().c_str(), client->Buffer().size(), 0);
+    if(tmp <= 0)
+    {
+        std::cout << "send to " << targetFd << " failure!" << std::endl;
+        return false;
+    }
+    return true;
+}
+
+void ChatServer::freeClient(int fd)
+{
+    if(fd == m_maxClientFd) 
+    {
+        //更新最大fd
+        for(int i = m_maxClientFd - 1; i >= 0; i--)
+        {
+            if(m_users[i] != nullptr)
+            {
+                m_maxClientFd = i;
+                break;
+            }
+        }
+    }
+
+    //释放fd相关资源
+    m_users[fd].reset();
+    
+    m_poller->rmClient(fd, m_maxClientFd); 
+    m_acceptor->reduceClientNum(); //减少客户端数量
+}
+
+void ChatServer::start()
+{
+    m_isStop = false;
+    if(!m_acceptor->listenClient())
+    {
+        std::cout << "create listenfd false" << std::endl;
+        return ;
+    }
+
+    while(!m_isStop)
+    {
+        std::vector<std::shared_ptr<Client>> activeClients;
+        m_poller->poll(activeClients, m_acceptor);
+
+        if(m_acceptor->isReady()) //listenfd就绪
+        {
+            if(!m_acceptor->acceptClient())
+            {
+                std::cout << "accept Client failure!" << std::endl;
+            }
+        }
+
+        for(std::shared_ptr<Client>& client : activeClients)
+        {
+            client->handleEvent();  
         } 
     }
+
+}
+
+void ChatServer::stop()
+{
+    m_isStop = true;
 }
 
 int main(int argc,char * argv[])
 {
-    ChatServer& server = ChatServer::getInstance();
-    bool judge = server.initServer();
-    if(judge == false)
-    {
-        delete &server;
-        return 0;
-    }
-    server.chatRoom();
+    ChatServer::getInstance();
+    ChatServer::getInstance().start();
+    
     return 0;
 }
 

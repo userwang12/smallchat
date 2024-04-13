@@ -1,12 +1,12 @@
 # Makefile
 
 CXX = g++
-CXXFLAGS = -std=c++11
+CXXFLAGS = -std=c++17
 
 all: server
 
 server: ChatServer.cpp
-	$(CXX) $(CXXFLAGS) $^ -o $@
+	$(CXX) $(CXXFLAGS) $^ -o $@ -g
 
 clean:
 	rm -f server
